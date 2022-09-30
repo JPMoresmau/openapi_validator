@@ -179,7 +179,7 @@ fn response_content_ok() {
     assert!(r.is_ok(), "{}", r.unwrap_err());
     assert_eq!(
         Some("successful operation".to_string()),
-        r.unwrap().description
+        r.unwrap().0.description
     );
 }
 

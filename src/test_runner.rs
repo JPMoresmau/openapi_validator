@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
+use futures::stream::futures_unordered::FuturesUnordered;
+use futures::stream::StreamExt;
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::Path;
@@ -13,10 +16,16 @@ use openapi::Operation;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TestCase {
+    id: String,
     request: String,
     api_operation: Option<String>,
     api_error: Option<String>,
     response: String,
+}
+
+pub struct TestResult {
+    pub id: String,
+    pub result: Result<()>,
 }
 
 pub struct TestHarness<'a> {
@@ -47,26 +56,46 @@ where
     parse(file)
 }
 
-pub async fn run_tests<'a>(harness: &TestHarness<'a>, cases: &[TestCase]) -> Vec<Result<()>> {
+pub async fn run_tests<'a>(harness: &TestHarness<'a>, cases: &[TestCase]) -> Vec<TestResult> {
     let mut v = Vec::with_capacity(cases.len());
     for case in cases {
-        let r = run_test(harness, case).await;
-        if let Err(err) = &r {
-            println!("{err}");
-        }
+        let r = run_test_result(harness, case).await;
         v.push(r);
     }
     v
+}
+
+pub async fn run_tests_parallel<'a>(
+    harness: &TestHarness<'a>,
+    cases: &[TestCase],
+) -> Vec<TestResult> {
+    cases
+        .iter()
+        .map(|case| run_test_result(harness, case))
+        .collect::<FuturesUnordered<_>>()
+        .collect()
+        .await
+}
+
+pub async fn run_test_result<'a>(harness: &TestHarness<'a>, case: &TestCase) -> TestResult {
+    let result = run_test(harness, case).await;
+    if let Err(err) = &result {
+        println!("{}: {err}", case.id);
+    }
+    TestResult {
+        id: case.id.clone(),
+        result,
+    }
 }
 
 pub async fn run_test<'a>(harness: &TestHarness<'a>, case: &TestCase) -> Result<()> {
     let req = parse_request(harness, &case.request)?;
     match validate_request(harness.spec, &req) {
         Ok(op) => {
-            if let (Some(expected_operation), Some(id)) = (&case.api_operation, &op.operation_id) {
-                if expected_operation != id {
+            if let (Some(test_operation), Some(id)) = (&case.api_operation, &op.operation_id) {
+                if test_operation != id {
                     return Err(anyhow!(
-                        "wrong operation id, expected {id}, resolved {expected_operation}"
+                        "wrong operation id, resolved {id}, test expected {test_operation}"
                     ));
                 }
             }
@@ -88,15 +117,16 @@ async fn check_response<'a>(
 
     let mut headers = [EMPTY_HEADER; 16];
     let mut req = httparse::Response::new(&mut headers);
-    let res = req.parse(case.response.as_bytes())?;
+    let expected_bytes = case.response.as_bytes();
+    let res = req.parse(expected_bytes)?;
     match res {
         Status::Partial => {
-            return Err(anyhow!("partial response provided"));
+            return Err(anyhow!("partial response provided in text"));
         }
         Status::Complete(sz) => {
             let raw_res = (req, case.response.as_str(), sz);
 
-            validate_response(harness.spec, op, &raw_res)?;
+            let (_, expected_value) = validate_response(harness.spec, op, &raw_res)?;
             if let Some(status) = raw_res.status() {
                 if response.status().as_u16() != status {
                     return Err(anyhow!(
@@ -124,6 +154,19 @@ async fn check_response<'a>(
                     None => {
                         return Err(anyhow!("missing header {}", h.name));
                     }
+                }
+            }
+
+            if let Some(expected_value) = expected_value {
+                let received_bytes = response.bytes().await?;
+                let received_content: Value =
+                    serde_json::from_str(std::str::from_utf8(&received_bytes)?)?;
+                if received_content != expected_value {
+                    return Err(anyhow!(
+                        "unexpected content expected `{}`, received `{}`",
+                        expected_value,
+                        received_content,
+                    ));
                 }
             }
         }

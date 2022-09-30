@@ -153,7 +153,7 @@ pub fn validate_raw_response<'a, 'b>(
     spec: &'a ValidationSpec,
     op: &'a Operation,
     response: &'b str,
-) -> Result<&'a Reference<Response>> {
+) -> Result<(&'a Reference<Response>, Option<Value>)> {
     let mut headers = [EMPTY_HEADER; 16];
     let mut req = httparse::Response::new(&mut headers);
     let res = req.parse(response.as_bytes())?;
@@ -167,7 +167,7 @@ pub fn validate_response<'a, 'b, T>(
     spec: &'a ValidationSpec,
     op: &'a Operation,
     response: &'b T,
-) -> Result<&'a Reference<Response>>
+) -> Result<(&'a Reference<Response>, Option<Value>)>
 where
     T: ResponseDefinition,
 {
@@ -192,7 +192,7 @@ pub fn check_response<'a, 'b, T>(
     spec: &'a ValidationSpec,
     ref_response: &'a Reference<Response>,
     response: &'b T,
-) -> Result<&'a Reference<Response>>
+) -> Result<(&'a Reference<Response>, Option<Value>)>
 where
     T: ResponseDefinition,
 {
@@ -201,19 +201,21 @@ where
     let content_type = response
         .header("content-type")?
         .ok_or_else(|| anyhow!("no content type provided"))?;
-    match r.content.get(content_type) {
+    let value = match r.content.get(content_type) {
         Some(mt) => {
             if let Some(schema) = &mt.schema {
                 if let Some(body) = response.body()? {
-                    validate_body(spec.raw_spec.clone(), schema, body)?;
+                    Some(validate_body(spec.raw_spec.clone(), schema, body)?)
                 } else {
                     return Err(anyhow!("no body in response"));
                 }
+            } else {
+                None
             }
         }
         None => return Err(anyhow!("no response content for type {content_type}")),
-    }
-    Ok(ref_response)
+    };
+    Ok((ref_response, value))
 }
 
 pub trait RequestDefinition {
@@ -583,7 +585,7 @@ impl SchemaResolver for SpecResolver {
     }
 }
 
-fn validate_body(v_spec: Arc<Value>, schema: &Schema, value: &str) -> Result<()> {
+fn validate_body(v_spec: Arc<Value>, schema: &Schema, value: &str) -> Result<Value> {
     let v = serde_json::to_value(schema).map_err(|e| anyhow!("cannot get schema as value: {e}"))?;
     let v = serde_json::from_str(&v.to_string().replace("#/", "json-schema://spec/"))
         .map_err(|e| anyhow!("cannot parse transformed schema {e}"))?;
@@ -608,7 +610,7 @@ fn validate_body(v_spec: Arc<Value>, schema: &Schema, value: &str) -> Result<()>
             .collect::<Vec<String>>()
             .join("\n"))),
     };
-    r
+    r.map(|_| input)
 }
 
 fn validate_value(schema: &Schema, value: &str) -> Result<()> {

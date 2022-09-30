@@ -1,6 +1,6 @@
 use openapi::read_from_file;
 use openapi_validator::{
-    read_replacements_from_file, read_test_from_file, run_tests, TestHarness, ValidationSpec,
+    read_replacements_from_file, read_test_from_file, run_tests_parallel, TestHarness, ValidationSpec,
 };
 use std::env;
 use std::process;
@@ -20,9 +20,9 @@ async fn main() {
                     Ok(v_spec) => match read_test_from_file(&args[3]) {
                         Ok(cases) => {
                             let harness = TestHarness::new(&v_spec);
-                            let v = run_tests(&harness, &cases).await;
+                            let v = run_tests_parallel(&harness, &cases).await;
                             let total = v.len();
-                            let success = v.iter().filter(|r| r.is_ok()).count();
+                            let success = v.iter().filter(|r| r.result.is_ok()).count();
                             println!("{success}/{total} passed, {} failed", total - success);
                         }
                         Err(err) => {
