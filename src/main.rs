@@ -1,6 +1,7 @@
 use openapi::read_from_file;
 use openapi_validator::{
-    read_replacements_from_file, read_test_from_file, run_tests_parallel, TestHarness, ValidationSpec,
+    read_replacements_from_file, read_tests_from_directory, run_tests_parallel, TestHarness,
+    ValidationSpec,
 };
 use std::env;
 use std::process;
@@ -9,7 +10,7 @@ use std::process;
 async fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 4 {
-        println!("Usage: openapi_validator <spec file name> <root> <test cases file>");
+        println!("Usage: openapi_validator <spec file name> <replacements> <test cases directory>");
         process::exit(1);
     }
     match read_from_file(&args[1]) {
@@ -17,7 +18,7 @@ async fn main() {
             println!("Spec OK");
             match read_replacements_from_file(&args[2]) {
                 Ok(reps) => match ValidationSpec::new(&spec, reps) {
-                    Ok(v_spec) => match read_test_from_file(&args[3]) {
+                    Ok(v_spec) => match read_tests_from_directory(&args[3]) {
                         Ok(cases) => {
                             let harness = TestHarness::new(&v_spec);
                             let v = run_tests_parallel(&harness, &cases).await;

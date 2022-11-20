@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::Path;
+use walkdir::{DirEntry, WalkDir};
 
 use crate::{
     validate_request, validate_response, RequestDefinition, ResponseDefinition, ValidationSpec,
@@ -46,6 +47,47 @@ pub fn read_test_from_file<P: AsRef<Path>>(path: P) -> io::Result<Vec<TestCase>>
     from_file(path.as_ref(), |file| {
         serde_yaml::from_reader(file).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
     })
+}
+
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s.starts_with("."))
+        .unwrap_or(false)
+}
+
+fn is_yaml(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s.ends_with(".yaml"))
+        .unwrap_or(false)
+}
+
+pub fn read_tests_from_directory<P: AsRef<Path>>(path: P) -> io::Result<Vec<TestCase>> {
+    let mut all_tests = Vec::new();
+    for entry in WalkDir::new(&path) {
+        let entry = entry?;
+        
+        if !is_hidden(&entry) && is_yaml(&entry) {
+
+            let mut v = read_test_from_file(entry.path())?;
+            if let Some(diff) = pathdiff::diff_paths(entry.path(), &path) {
+                if let Some (str) = diff.to_str() {
+                    if let Some(ix) =  str.rfind('/') {
+                        let prefix = str[0..ix].replace('/', "::");
+                        for test_case in v.iter_mut() {
+                            test_case.id = format!("{prefix}::{}", test_case.id);
+                        }
+                    }
+                }
+            }
+
+            all_tests.append(&mut v);
+        }
+    }
+    Ok(all_tests)
 }
 
 fn from_file<P>(path: &Path, parse: P) -> io::Result<Vec<TestCase>>

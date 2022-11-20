@@ -1,5 +1,8 @@
 mod test_runner;
-pub use test_runner::{read_test_from_file, run_test, run_tests, run_tests_parallel, TestCase, TestHarness};
+pub use test_runner::{
+    read_test_from_file, read_tests_from_directory, run_test, run_tests, run_tests_parallel,
+    TestCase, TestHarness,
+};
 
 mod validate;
 pub use validate::{
