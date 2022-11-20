@@ -16,8 +16,8 @@ use std::path::Path;
 use url::Url;
 
 #[derive(Debug, Clone)]
-pub struct ValidationSpec<'a> {
-    spec: &'a Spec,
+pub struct ValidationSpec {
+    spec: Spec,
     raw_spec: Arc<Value>,
     pub roots: Vec<RootReplacement>,
 }
@@ -42,10 +42,10 @@ where
     parse(file)
 }
 
-impl<'a> ValidationSpec<'a> {
-    pub fn new(spec: &'a Spec, roots: Vec<RootReplacement>) -> Result<ValidationSpec<'a>> {
+impl ValidationSpec {
+    pub fn new(spec: Spec, roots: Vec<RootReplacement>) -> Result<ValidationSpec> {
         let raw_spec = Arc::new(
-            serde_json::to_value(spec).map_err(|e| anyhow!("cannot get spec as value: {e}"))?,
+            serde_json::to_value(&spec).map_err(|e| anyhow!("cannot get spec as value: {e}"))?,
         );
         Ok(ValidationSpec {
             spec,
@@ -79,14 +79,14 @@ where
     T: RequestDefinition,
 {
     let (_server, path) = match request.path() {
-        Some(path) => validate_uri(spec.spec, path, &spec.roots)?,
+        Some(path) => validate_uri(&spec.spec, path, &spec.roots)?,
         None => return Err(anyhow!("no path in request")),
     };
     let o_query = path.split_once('?');
 
     let path = o_query.map(|(a, _)| a).unwrap_or(&path);
 
-    let (path, o_values) = find_path(spec.spec, path)?;
+    let (path, o_values) = find_path(&spec.spec, path)?;
     let op = match request.method() {
         Some("GET") => path.get.as_ref(),
         Some("POST") => path.post.as_ref(),
@@ -104,7 +104,7 @@ where
 
     if let Some(values) = o_values {
         for (key, value) in values.iter() {
-            let param = find_parameter(spec.spec, path, op, key, ParameterLocation::Path)?;
+            let param = find_parameter(&spec.spec, path, op, key, ParameterLocation::Path)?;
             if let Some(schema) = &param.schema {
                 validate_value(schema, value)?;
             }
@@ -113,17 +113,17 @@ where
 
     if let Some(values) = query_values {
         for (key, value) in values.iter() {
-            let param = find_parameter(spec.spec, path, op, key, ParameterLocation::Query)?;
+            let param = find_parameter(&spec.spec, path, op, key, ParameterLocation::Query)?;
             if let Some(schema) = &param.schema {
                 validate_value(schema, value)?;
             }
         }
     }
 
-    validate_request_headers(spec.spec, path, op, request)?;
+    validate_request_headers(&spec.spec, path, op, request)?;
 
     if let Some(body_ref) = &op.request_body {
-        let body = resolve_ref_request_body(spec.spec, body_ref)?;
+        let body = resolve_ref_request_body(&spec.spec, body_ref)?;
         let content_type = request
             .header("content-type")?
             .ok_or_else(|| anyhow!("no content type provided"))?;
@@ -196,8 +196,8 @@ pub fn check_response<'a, 'b, T>(
 where
     T: ResponseDefinition,
 {
-    let r = resolve_ref_response(spec.spec, ref_response)?;
-    validate_response_headers(spec.spec, r, response)?;
+    let r = resolve_ref_response(&spec.spec, ref_response)?;
+    validate_response_headers(&spec.spec, r, response)?;
     let content_type = response
         .header("content-type")?
         .ok_or_else(|| anyhow!("no content type provided"))?;

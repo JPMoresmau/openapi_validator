@@ -7,14 +7,14 @@ use pretty_assertions::assert_eq;
 
 lazy_static! {
     static ref PETSTORE_SPEC: Spec = read_from_file("./data/petstore-3.1.0.yaml").unwrap();
-    static ref PETSTORE_VALIDATION: ValidationSpec<'static> = build_spec(vec![RootReplacement {
+    static ref PETSTORE_VALIDATION: ValidationSpec = build_spec(vec![RootReplacement {
         from: String::from("https://petstore3.swagger.io/api"),
         to: String::new()
     }]);
 }
 
-fn build_spec<'a>(roots: Vec<RootReplacement>) -> ValidationSpec<'a> {
-    ValidationSpec::new(&PETSTORE_SPEC, roots).unwrap()
+fn build_spec(roots: Vec<RootReplacement>) -> ValidationSpec {
+    ValidationSpec::new(PETSTORE_SPEC.clone(), roots).unwrap()
 }
 
 #[test]

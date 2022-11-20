@@ -17,11 +17,15 @@ async fn main() {
         Ok(spec) => {
             println!("Spec OK");
             match read_replacements_from_file(&args[2]) {
-                Ok(reps) => match ValidationSpec::new(&spec, reps) {
+                Ok(reps) => match ValidationSpec::new(spec, reps) {
                     Ok(v_spec) => match read_tests_from_directory(&args[3]) {
                         Ok(cases) => {
-                            let harness = TestHarness::new(&v_spec);
-                            let v = run_tests_parallel(&harness, &cases).await;
+                            let mut harness = TestHarness::new(v_spec);
+                            harness.substitutions =  Box::new(|name:&str| {
+                                    Some(name.to_owned())
+                                }
+                            );
+                            let v = run_tests_parallel(harness, cases).await;
                             let total = v.len();
                             let success = v.iter().filter(|r| r.result.is_ok()).count();
                             println!("{success}/{total} passed, {} failed", total - success);

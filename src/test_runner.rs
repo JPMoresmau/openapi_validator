@@ -1,12 +1,14 @@
 use anyhow::{anyhow, Result};
-use futures::stream::futures_unordered::FuturesUnordered;
-use futures::stream::StreamExt;
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader};
+use std::mem;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::{
@@ -22,6 +24,7 @@ pub struct TestCase {
     api_operation: Option<String>,
     api_error: Option<String>,
     response: String,
+    depends_on: Option<Vec<String>>,
 }
 
 impl TestCase {
@@ -84,23 +87,106 @@ fn substitute_str<T: Fn(&str) -> Option<String>>(str: &str, substitutions: T) ->
     result
 }
 
+#[derive(Debug)]
 pub struct TestResult {
     pub id: String,
     pub result: Result<()>,
 }
 
-pub struct TestHarness<'a> {
-    spec: &'a ValidationSpec<'a>,
+pub struct TestHarness {
+    spec: ValidationSpec,
     client: Client,
-    substitutions: Box<dyn Fn(&str) -> Option<String>>,
+    pub substitutions: Box<dyn Fn(&str) -> Option<String> + Sync + Send>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TestTree {
+    cases: HashMap<String, TestCase>,
+    //dependencies: Graph<String, ()>,
+    children: HashMap<String, Vec<String>>,
+    roots: Vec<String>,
+}
+
+impl TestTree {
+    fn new(cases: Vec<TestCase>) -> Self {
+        let mut cases_by_id = HashMap::new();
+        let mut children = HashMap::new();
+        let mut roots = Vec::new();
+        //let mut dependencies = Graph::new();
+        //let mut id_to_node = HashMap::new();
+        for case in cases.into_iter() {
+            //let ix = dependencies.add_node(case.id.clone());
+            // id_to_node.insert(case.id.clone(),ix);
+            cases_by_id.insert(case.id.clone(), case);
+        }
+        for case in cases_by_id.values() {
+            if let Some(ds) = case.depends_on.as_ref() {
+                if !ds.is_empty() {
+                    /*if let Some(idx) = id_to_node.get(&case.id) {
+                        for d in ds {
+                            if let Some(didx) = id_to_node.get(d) {
+                                dependencies.add_edge(*didx, *idx, ());
+                            }
+                        }
+                    }*/
+                    for d in ds {
+                        let v = children.entry(d.clone()).or_insert_with(|| Vec::new());
+                        v.push(case.id.clone());
+                    }
+                } else {
+                    roots.push(case.id.clone());
+                }
+            } else {
+                roots.push(case.id.clone());
+            }
+        }
+
+        TestTree {
+            cases: cases_by_id,
+            children,
+            roots,
+        }
+    }
+
+    fn test_done(&mut self, id: &str) -> Vec<String> {
+        let mut can_run = Vec::new();
+        if let Some(children) = self.children.get(id) {
+            for child in children {
+                if let Some(case) = self.cases.get_mut(child) {
+                    if let Some(ds) = case.depends_on.as_mut() {
+                        ds.retain(|f| f != id);
+                        if ds.is_empty() {
+                            can_run.push(case.id.clone());
+                        }
+                    }
+                }
+            }
+        }
+        can_run
+    }
+
+    pub fn debug(&self) {
+        let mut tree = self.clone();
+        let mut ready = self.roots.clone();
+        let mut todo = Vec::new();
+        while !ready.is_empty() {
+            for id in &ready {
+                println!("{id}");
+                let mut v = tree.test_done(id);
+                todo.append(&mut v);
+            }
+            ready.clear();
+            ready.append(&mut todo);
+        }
+    }
 }
 
 fn no_substitutions(_: &str) -> Option<String> {
     None
 }
 
-impl<'a> TestHarness<'a> {
-    pub fn new(spec: &'a ValidationSpec<'a>) -> TestHarness<'a> {
+impl TestHarness {
+    pub fn new(spec: ValidationSpec) -> TestHarness {
         TestHarness {
             spec,
             client: Client::new(),
@@ -131,7 +217,7 @@ fn is_yaml(entry: &DirEntry) -> bool {
         .unwrap_or(false)
 }
 
-pub fn read_tests_from_directory<P: AsRef<Path>>(path: P) -> io::Result<Vec<TestCase>> {
+pub fn read_tests_from_directory<P: AsRef<Path>>(path: P) -> io::Result<TestTree> {
     let mut all_tests = Vec::new();
     for entry in WalkDir::new(&path) {
         let entry = entry?;
@@ -152,7 +238,11 @@ pub fn read_tests_from_directory<P: AsRef<Path>>(path: P) -> io::Result<Vec<Test
             all_tests.append(&mut v);
         }
     }
-    Ok(all_tests)
+
+    let tree = TestTree::new(all_tests);
+    //tree.debug();
+
+    Ok(tree)
 }
 
 fn from_file<P>(path: &Path, parse: P) -> io::Result<Vec<TestCase>>
@@ -162,7 +252,7 @@ where
     let file = BufReader::new(File::open(path)?);
     parse(file)
 }
-
+/*
 pub async fn run_tests<'a>(harness: &TestHarness<'a>, cases: &[TestCase]) -> Vec<TestResult> {
     let mut v = Vec::with_capacity(cases.len());
     for case in cases {
@@ -170,9 +260,89 @@ pub async fn run_tests<'a>(harness: &TestHarness<'a>, cases: &[TestCase]) -> Vec
         v.push(r);
     }
     v
+}*/
+
+pub async fn run_tests_parallel(harness: TestHarness, mut tree: TestTree) -> Vec<TestResult> {
+    let result = Vec::new();
+    let harness = Arc::new(Mutex::new(harness));
+    let results = Arc::new(Mutex::new(result));
+    let ready = mem::replace(&mut tree.roots, Vec::new());
+    let tree_tx = Arc::new(RwLock::new(tree));
+    let mut handles = Vec::new();
+    //let mut todo = Mutex::new(Vec::new());
+
+    /*while !ready.is_empty() {
+        ready.iter().map(|case| test_test_node(harness, case, &tree_tx, &results, &todo))
+            .collect::<FuturesUnordered<_>>()
+            .collect()
+            .await;
+        ready = todo.into_inner().unwrap();
+        todo = Mutex::new(Vec::new());
+    }*/
+    for case in ready {
+        let tree = tree_tx.clone();
+        let results = results.clone();
+        let harness = harness.clone();
+        let handle =
+            tokio::spawn(async move { run_test_node(&harness, case, &tree, &results).await });
+        handles.push(handle);
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    Arc::try_unwrap(results).unwrap().into_inner()
 }
 
-pub async fn run_tests_parallel<'a>(
+use async_recursion::async_recursion;
+
+#[async_recursion]
+async fn run_test_node<'a>(
+    harness: &Arc<Mutex<TestHarness>>,
+    case: String,
+    tree: &Arc<RwLock<TestTree>>,
+    results_tx: &Arc<Mutex<Vec<TestResult>>>,
+) {
+    let c = {
+        if let Some(case) = tree.read().await.cases.get(&case) {
+            Some(case.clone())
+        } else {
+            None
+        }
+    };
+    let r = {
+        if let Some(case) = c {
+            let harness = harness.clone();
+            let id = case.id.clone();
+            let r = run_test_result(&harness, &case).await;
+            Some((r, id))
+        } else {
+            None
+        }
+    };
+    if let Some((r, id)) = r {
+        {
+            results_tx.lock().await.push(r);
+        }
+        let can_run = {
+            let mut t = tree.write().await;
+            t.test_done(&id)
+        };
+        let mut handles = Vec::new();
+        for child in can_run {
+            let tree = tree.clone();
+            let results = results_tx.clone();
+            let harness = harness.clone();
+            let handle =
+                tokio::spawn(async move { run_test_node(&harness, child, &tree, &results).await });
+            handles.push(handle);
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+    }
+}
+/*
+pub async fn run_tests_parallel2<'a>(
     harness: &TestHarness<'a>,
     cases: &[TestCase],
 ) -> Vec<TestResult> {
@@ -183,8 +353,8 @@ pub async fn run_tests_parallel<'a>(
         .collect()
         .await
 }
-
-pub async fn run_test_result<'a>(harness: &TestHarness<'a>, case: &TestCase) -> TestResult {
+*/
+pub async fn run_test_result<'a>(harness: &Arc<Mutex<TestHarness>>, case: &TestCase) -> TestResult {
     let result = run_test(harness, case).await;
     if let Err(err) = &result {
         println!("{}: {err}", case.id);
@@ -195,10 +365,11 @@ pub async fn run_test_result<'a>(harness: &TestHarness<'a>, case: &TestCase) -> 
     }
 }
 
-pub async fn run_test<'a>(harness: &TestHarness<'a>, case: &TestCase) -> Result<()> {
+pub async fn run_test<'a>(harness: &Arc<Mutex<TestHarness>>, case: &TestCase) -> Result<()> {
+    let harness = harness.lock().await;
     let case = case.substitute(&harness.substitutions);
-    let req = parse_request(harness, &case.request)?;
-    match validate_request(harness.spec, &req) {
+    let req = parse_request(&harness, &case.request)?;
+    match validate_request(&harness.spec, &req) {
         Ok(op) => {
             if let (Some(test_operation), Some(id)) = (&case.api_operation, &op.operation_id) {
                 if test_operation != id {
@@ -207,7 +378,7 @@ pub async fn run_test<'a>(harness: &TestHarness<'a>, case: &TestCase) -> Result<
                     ));
                 }
             }
-            check_response(harness, &case, req, op).await?;
+            check_response(&harness, &case, req, op).await?;
             Ok(())
         }
         Err(err) if case.api_error == Some(err.to_string()) => Ok(()),
@@ -215,8 +386,8 @@ pub async fn run_test<'a>(harness: &TestHarness<'a>, case: &TestCase) -> Result<
     }
 }
 
-async fn check_response<'a>(
-    harness: &TestHarness<'a>,
+async fn check_response(
+    harness: &TestHarness,
     case: &TestCase,
     request: reqwest::Request,
     op: &Operation,
@@ -234,7 +405,7 @@ async fn check_response<'a>(
         Status::Complete(sz) => {
             let raw_res = (req, case.response.as_str(), sz);
 
-            let (_, expected_value) = validate_response(harness.spec, op, &raw_res)?;
+            let (_, expected_value) = validate_response(&harness.spec, op, &raw_res)?;
             if let Some(status) = raw_res.status() {
                 if response.status().as_u16() != status {
                     return Err(anyhow!(
@@ -283,7 +454,7 @@ async fn check_response<'a>(
     Ok(())
 }
 
-fn parse_request<'a>(harness: &TestHarness<'a>, request: &'a str) -> Result<reqwest::Request> {
+fn parse_request<'a>(harness: &TestHarness, request: &'a str) -> Result<reqwest::Request> {
     let mut headers = [EMPTY_HEADER; 16];
     let mut req = Request::new(&mut headers);
     let res = req
