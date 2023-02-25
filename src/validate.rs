@@ -175,6 +175,10 @@ where
         if let Some(resps) = &op.responses {
             for (id, resp) in &resps.response {
                 if &status.to_string() == id {
+                    // No content
+                    if status == 204 {
+                        return Ok((resp, None));
+                    }
                     return check_response(spec, resp, response);
                 }
             }
@@ -694,13 +698,24 @@ fn find_path<'a, 'b>(
             return Ok((item, None));
         }
     }
+    let mut matching = vec![];
+    let mut sz = usize::MAX;
     for (pattern, item) in spec.paths.iter() {
         if pattern.contains('{') {
             if let Some(values) = match_path_pattern(pattern, path) {
+                sz= sz.min(values.len());
+                matching.push((item, Some(values)));
+            }
+        }
+    }
+    for (item, mvalues) in matching.into_iter() {
+        if let Some(values) = mvalues {
+            if values.len() == sz {
                 return Ok((item, Some(values)));
             }
         }
     }
+
 
     Err(anyhow!("no path found for {path}"))
 }
