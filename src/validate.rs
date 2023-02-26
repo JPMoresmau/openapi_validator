@@ -84,7 +84,7 @@ where
     };
     let o_query = path.split_once('?');
 
-    let path = o_query.map(|(a, _)| a).unwrap_or(&path);
+    let path = o_query.map(|(a, _)| a).unwrap_or(path);
 
     let (path, o_values) = find_path(&spec.spec, path)?;
     let op = match request.method() {
@@ -136,7 +136,7 @@ where
             Some(mt) => {
                 if let Some(schema) = &mt.schema {
                     if let Some(body) = request.body()? {
-                        validate_body(spec.raw_spec.clone(), schema, body)?;
+                        validate_body(spec.raw_spec.clone(), schema, body, false)?;
                     // streamed by reqwest and not available
                     } else if content_type != "multipart/form-data" {
                         return Err(anyhow!("no body in request"));
@@ -149,10 +149,10 @@ where
     Ok(op)
 }
 
-pub fn validate_raw_response<'a, 'b>(
+pub fn validate_raw_response<'a>(
     spec: &'a ValidationSpec,
     op: &'a Operation,
-    response: &'b str,
+    response: &str,
 ) -> Result<(&'a Reference<Response>, Option<Value>)> {
     let mut headers = [EMPTY_HEADER; 16];
     let mut req = httparse::Response::new(&mut headers);
@@ -163,10 +163,10 @@ pub fn validate_raw_response<'a, 'b>(
     }
 }
 
-pub fn validate_response<'a, 'b, T>(
+pub fn validate_response<'a, T>(
     spec: &'a ValidationSpec,
     op: &'a Operation,
-    response: &'b T,
+    response: &T,
 ) -> Result<(&'a Reference<Response>, Option<Value>)>
 where
     T: ResponseDefinition,
@@ -176,7 +176,7 @@ where
             for (id, resp) in &resps.response {
                 if &status.to_string() == id {
                     // No content
-                    if status == 204 {
+                    if status == 204 || status == 304 {
                         return Ok((resp, None));
                     }
                     return check_response(spec, resp, response);
@@ -192,10 +192,10 @@ where
     Err(anyhow!("no status in response"))
 }
 
-pub fn check_response<'a, 'b, T>(
+pub fn check_response<'a, T>(
     spec: &'a ValidationSpec,
     ref_response: &'a Reference<Response>,
-    response: &'b T,
+    response: &T,
 ) -> Result<(&'a Reference<Response>, Option<Value>)>
 where
     T: ResponseDefinition,
@@ -209,7 +209,7 @@ where
         Some(mt) => {
             if let Some(schema) = &mt.schema {
                 if let Some(body) = response.body()? {
-                    Some(validate_body(spec.raw_spec.clone(), schema, body)?)
+                    Some(validate_body(spec.raw_spec.clone(), schema, body, true)?)
                 } else {
                     return Err(anyhow!("no body in response"));
                 }
@@ -567,7 +567,10 @@ fn resolve_parameter_ref<'a, T>(spec: &'a Spec, mut path: Vec<&'a str>) -> Resul
 }
 */
 
-struct SpecResolver(Arc<Value>);
+struct SpecResolver {
+    spec: Arc<Value>,
+    is_response: bool,
+}
 
 impl SchemaResolver for SpecResolver {
     fn resolve(
@@ -578,18 +581,47 @@ impl SchemaResolver for SpecResolver {
     ) -> Result<Arc<Value>, SchemaResolverError> {
         if let Some(path) = url.to_string().strip_prefix("json-schema://spec") {
             let v = self
-                .0
+                .spec
                 .pointer(path)
                 .ok_or_else(|| anyhow!("path '{path}' cannot be resolved"))?;
-            let v = serde_json::from_str(&v.to_string().replace("#/", "json-schema://spec/"))
+            let mut v = serde_json::from_str(&v.to_string().replace("#/", "json-schema://spec/"))
                 .map_err(|e| anyhow!("cannot parse transformed schema {e}"))?;
+            post_process_schema(
+                &mut v,
+                if self.is_response {
+                    "writeOnly"
+                } else {
+                    "readOnly"
+                },
+            );
             return Ok(Arc::new(v));
         }
         Err(anyhow!("cannot resolve {url}"))
     }
 }
 
-fn validate_body(v_spec: Arc<Value>, schema: &Schema, value: &str) -> Result<Value> {
+fn post_process_schema(value: &mut Value, flag_to_ignore: &str) {
+    //eprintln!("{flag_to_ignore}: {:?}", value.get("properties"));
+    if let Some(props) = value.get("properties").and_then(Value::as_object) {
+        let properties_to_ignore: Vec<String> = props
+            .iter()
+            .filter(|(_, p)| p.get(flag_to_ignore) == Some(&Value::Bool(true)))
+            .map(|(k, _)| k.clone())
+            .collect();
+        if let Some(required) = value.get_mut("required").and_then(Value::as_array_mut) {
+            required.retain(
+                |v| matches!(v.as_str(), Some(s) if !properties_to_ignore.iter().any(|v| v==s)),
+            );
+        }
+    }
+}
+
+fn validate_body(
+    v_spec: Arc<Value>,
+    schema: &Schema,
+    value: &str,
+    is_response: bool,
+) -> Result<Value> {
     let v = serde_json::to_value(schema).map_err(|e| anyhow!("cannot get schema as value: {e}"))?;
     let v = serde_json::from_str(&v.to_string().replace("#/", "json-schema://spec/"))
         .map_err(|e| anyhow!("cannot parse transformed schema {e}"))?;
@@ -598,7 +630,10 @@ fn validate_body(v_spec: Arc<Value>, schema: &Schema, value: &str) -> Result<Val
     let mut opts = JSONSchema::options();
     //opts.with_document("http://spec/".into(), v_spec);
 
-    opts.with_resolver(SpecResolver(v_spec));
+    opts.with_resolver(SpecResolver {
+        spec: v_spec,
+        is_response,
+    });
 
     let compiled = opts
         .compile(&v)
@@ -618,10 +653,8 @@ fn validate_body(v_spec: Arc<Value>, schema: &Schema, value: &str) -> Result<Val
 }
 
 fn validate_value(schema: &Schema, value: &str) -> Result<()> {
-    if !schema.r#enum.is_empty() {
-        if !schema.r#enum.iter().any(|e| e == value) {
-            return Err(anyhow!("{value} not part of enum values"));
-        }
+    if !schema.r#enum.is_empty() && !schema.r#enum.iter().any(|e| e == value) {
+        return Err(anyhow!("{value} not part of enum values"));
     }
     for tp in &schema.r#type {
         match tp {
@@ -674,7 +707,7 @@ fn validate_uri<'a, 'b>(
             //let new_url = format!("{}{suffix}",replacement.to);
             for server in spec.servers.iter() {
                 if let Some(server_suffix) = server.url.strip_prefix(&replacement.to) {
-                    if let Some(path) = suffix.strip_prefix(&server_suffix) {
+                    if let Some(path) = suffix.strip_prefix(server_suffix) {
                         return Ok((server, path));
                     }
                 }
@@ -703,7 +736,7 @@ fn find_path<'a, 'b>(
     for (pattern, item) in spec.paths.iter() {
         if pattern.contains('{') {
             if let Some(values) = match_path_pattern(pattern, path) {
-                sz= sz.min(values.len());
+                sz = sz.min(values.len());
                 matching.push((item, Some(values)));
             }
         }
@@ -715,7 +748,6 @@ fn find_path<'a, 'b>(
             }
         }
     }
-
 
     Err(anyhow!("no path found for {path}"))
 }

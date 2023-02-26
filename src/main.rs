@@ -21,27 +21,24 @@ async fn main() {
                     Ok(v_spec) => match read_tests_from_directory(&args[3]) {
                         Ok(cases) => {
                             let mut harness = TestHarness::new(v_spec);
-                            harness.substitutions =  Box::new(|name:&str| {
-                                    Some(name.to_owned())
-                                }
-                            );
+                            harness.substitutions = Box::new(|name: &str| Some(name.to_owned()));
                             let v = run_tests_parallel(harness, cases).await;
                             let total = v.len();
                             let success = v.iter().filter(|r| r.result.is_ok()).count();
                             println!("{success}/{total} passed, {} failed", total - success);
                         }
                         Err(err) => {
-                            println!("Cannot parse test cases: {}", err);
+                            println!("Cannot parse test cases: {err}");
                             process::exit(4);
                         }
                     },
                     Err(err) => {
-                        println!("Cannot build validation spec: {}", err);
+                        println!("Cannot build validation spec: {err}");
                         process::exit(3);
                     }
                 },
                 Err(err) => {
-                    println!("Cannot build replacements: {}", err);
+                    println!("Cannot build replacements: {err}");
                     process::exit(5);
                 }
             }
@@ -61,7 +58,7 @@ async fn main() {
             }*/
         }
         Err(err) => {
-            println!("Cannot parse spec: {}", err);
+            println!("Cannot parse spec: {err}");
             process::exit(2);
         }
     }

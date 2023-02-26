@@ -156,7 +156,7 @@ fn response_wrong_status() {
         op.summary
     );
 
-    let r = validate_raw_response(&PETSTORE_VALIDATION, &op, "HTTP/1.1 201 No Content\r\n\r\n");
+    let r = validate_raw_response(&PETSTORE_VALIDATION, op, "HTTP/1.1 201 No Content\r\n\r\n");
     assert!(r.is_err());
     assert_eq!("no matching response", r.unwrap_err().to_string());
 }
@@ -173,7 +173,7 @@ fn response_content_ok() {
 
     let r = validate_raw_response(
         &PETSTORE_VALIDATION,
-        &op,
+        op,
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
     );
     assert!(r.is_ok(), "{}", r.unwrap_err());
@@ -195,12 +195,43 @@ fn response_content_invalid() {
 
     let r = validate_raw_response(
         &PETSTORE_VALIDATION,
-        &op,
+        op,
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\naa",
     );
     assert!(r.is_err());
     assert_eq!(
         "cannot parse input expected value at line 1 column 1",
         r.unwrap_err().to_string()
+    );
+}
+
+#[test]
+fn read_only_write_only() {
+    let test_spec: Spec = read_from_file("./data/test-api.yaml").unwrap();
+    let test_validation: ValidationSpec = ValidationSpec::new(
+        test_spec,
+        vec![RootReplacement {
+            from: String::from("https://test.io/api"),
+            to: String::new(),
+        }],
+    )
+    .unwrap();
+    let r = validate_raw_request(
+        &test_validation,
+        "GET https://test.io/api/test/pet/123 HTTP/1.1\r\nHOST: test.io\r\n\r\n",
+    );
+    assert!(r.is_ok(), "{}", r.unwrap_err());
+    let op = r.unwrap();
+    assert_eq!(Some("Find pet by ID".to_string()), op.summary);
+
+    let r = validate_raw_response(
+        &test_validation,
+        op,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{\"id\":123,\"name\":\"dog\",\"photoUrls\":[]}",
+    );
+    assert!(r.is_ok(), "{}", r.unwrap_err());
+    assert_eq!(
+        Some("successful operation".to_string()),
+        r.unwrap().0.description
     );
 }

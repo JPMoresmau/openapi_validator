@@ -93,10 +93,12 @@ pub struct TestResult {
     pub result: Result<()>,
 }
 
+pub type SubstitutionFn = Box<dyn Fn(&str) -> Option<String> + Sync + Send>;
+
 pub struct TestHarness {
     spec: ValidationSpec,
     client: Client,
-    pub substitutions: Box<dyn Fn(&str) -> Option<String> + Sync + Send>,
+    pub substitutions: SubstitutionFn,
 }
 
 #[derive(Clone, Debug)]
@@ -130,7 +132,7 @@ impl TestTree {
                         }
                     }*/
                     for d in ds {
-                        let v = children.entry(d.clone()).or_insert_with(|| Vec::new());
+                        let v = children.entry(d.clone()).or_insert_with(Vec::new);
                         v.push(case.id.clone());
                     }
                 } else {
@@ -205,7 +207,7 @@ fn is_hidden(entry: &DirEntry) -> bool {
     entry
         .file_name()
         .to_str()
-        .map(|s| s.starts_with("."))
+        .map(|s| s.starts_with('.'))
         .unwrap_or(false)
 }
 
@@ -266,7 +268,7 @@ pub async fn run_tests_parallel(harness: TestHarness, mut tree: TestTree) -> Vec
     let result = Vec::new();
     let harness = Arc::new(Mutex::new(harness));
     let results = Arc::new(Mutex::new(result));
-    let ready = mem::replace(&mut tree.roots, Vec::new());
+    let ready = mem::take(&mut tree.roots);
     let tree_tx = Arc::new(RwLock::new(tree));
     let mut handles = Vec::new();
     //let mut todo = Mutex::new(Vec::new());
@@ -302,13 +304,7 @@ async fn run_test_node<'a>(
     tree: &Arc<RwLock<TestTree>>,
     results_tx: &Arc<Mutex<Vec<TestResult>>>,
 ) {
-    let c = {
-        if let Some(case) = tree.read().await.cases.get(&case) {
-            Some(case.clone())
-        } else {
-            None
-        }
-    };
+    let c = tree.read().await.cases.get(&case).cloned();
     let r = {
         if let Some(case) = c {
             let harness = harness.clone();
@@ -454,7 +450,7 @@ async fn check_response(
     Ok(())
 }
 
-fn parse_request<'a>(harness: &TestHarness, request: &'a str) -> Result<reqwest::Request> {
+fn parse_request(harness: &TestHarness, request: &str) -> Result<reqwest::Request> {
     let mut headers = [EMPTY_HEADER; 16];
     let mut req = Request::new(&mut headers);
     let res = req
