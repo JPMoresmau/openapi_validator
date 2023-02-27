@@ -15,19 +15,32 @@ use std::io::{self, BufReader};
 use std::path::Path;
 use url::Url;
 
+/// OpenAPI Spec and validation information.
 #[derive(Debug, Clone)]
 pub struct ValidationSpec {
+    /// The parsed OpenAPI spec.
     spec: Spec,
+    /// The raw Value representing the spec.
     raw_spec: Arc<Value>,
+    /// The root URLs replacements.
     pub roots: Vec<RootReplacement>,
 }
 
+/// Root replacement, to validate requests going to a different
+/// server root than what specified in the spec.
+/// 
+/// This allows for example to have a spec referencing your production
+/// server but validate calls going to a test server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootReplacement {
+    /// Root URL for the actual requests.
     pub from: String,
+    /// Destination root, as defined in the spec.
     pub to: String,
 }
 
+/// Read the root replacements from a YAML file, containing a list of objects
+/// with `from` and `to` fields.
 pub fn read_replacements_from_file<P: AsRef<Path>>(path: P) -> io::Result<Vec<RootReplacement>> {
     from_file(path.as_ref(), |file| {
         serde_yaml::from_reader(file).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
@@ -43,6 +56,7 @@ where
 }
 
 impl ValidationSpec {
+    /// Create a new Validation Spec from a parsed spec, with the given replacement for root URLs.
     pub fn new(spec: Spec, roots: Vec<RootReplacement>) -> Result<ValidationSpec> {
         let raw_spec = Arc::new(
             serde_json::to_value(&spec).map_err(|e| anyhow!("cannot get spec as value: {e}"))?,
@@ -55,6 +69,9 @@ impl ValidationSpec {
     }
 }
 
+/// Validate a raw HTTP request against the OpenAPI.
+/// The request is passed as a `&str` and will be parsed.
+/// Returns the OpenAPI Operation the request is for, or an error.
 pub fn validate_raw_request<'a, 'b>(
     spec: &'a ValidationSpec,
     request: &'b str,
@@ -71,6 +88,8 @@ where
     }
 }
 
+/// Validate a HTTP request against the OpenAPI.
+/// Returns the OpenAPI Operation the request is for, or an error.
 pub fn validate_request<'a, 'b, T>(
     spec: &'a ValidationSpec,
     request: &'b T,
@@ -149,6 +168,8 @@ where
     Ok(op)
 }
 
+/// Validates a raw response given the Operation that returned it.
+/// The response is passed as a `&str` and will be parsed.
 pub fn validate_raw_response<'a>(
     spec: &'a ValidationSpec,
     op: &'a Operation,
@@ -163,6 +184,7 @@ pub fn validate_raw_response<'a>(
     }
 }
 
+/// Validates a response given the Operation that returned it.
 pub fn validate_response<'a, T>(
     spec: &'a ValidationSpec,
     op: &'a Operation,
@@ -192,7 +214,8 @@ where
     Err(anyhow!("no status in response"))
 }
 
-pub fn check_response<'a, T>(
+/// Check the response matches what's expected by the OpenAPI response.
+fn check_response<'a, T>(
     spec: &'a ValidationSpec,
     ref_response: &'a Reference<Response>,
     response: &T,
@@ -222,21 +245,30 @@ where
     Ok((ref_response, value))
 }
 
+/// Abstraction over a HTTP Request.
 pub trait RequestDefinition {
+    /// The HTTP method.
     fn method(&self) -> Option<&str>;
 
+    /// The request path.
     fn path(&self) -> Option<&str>;
 
+    /// Get the request header value for the given header name.
     fn header(&self, key: &str) -> Result<Option<&str>>;
 
+    /// Get the body.
     fn body(&self) -> Result<Option<&str>>;
 }
 
+/// Abstraction over a HTTP response.
 pub trait ResponseDefinition {
+    /// HTTP response status.
     fn status(&self) -> Option<u16>;
 
+     /// Get the response header value for the given header name.
     fn header(&self, key: &str) -> Result<Option<&str>>;
 
+    /// Get the response body.
     fn body(&self) -> Result<Option<&str>>;
 }
 
@@ -347,6 +379,7 @@ impl ResponseDefinition for reqwest::Response {
 }
 */
 
+/// Find a parameter in the given path and operation.
 fn find_parameter<'a>(
     spec: &'a Spec,
     path: &'a PathItem,
@@ -368,6 +401,7 @@ fn find_parameter<'a>(
         .ok_or_else(|| anyhow!("Parameter {key} not found"))
 }
 
+/// Validate the request headers.
 fn validate_request_headers<'a, T>(
     spec: &'a Spec,
     path: &'a PathItem,
@@ -432,6 +466,7 @@ where
     Ok(())
 }
 
+/// Resolve a reference to a URL parameter.
 fn resolve_ref_parameter<'a>(
     spec: &'a Spec,
     reference: &'a Reference<Parameter>,
@@ -455,6 +490,7 @@ fn resolve_ref_parameter<'a>(
     }
 }
 
+/// Resolve a reference to a request body.
 fn resolve_ref_request_body<'a>(
     spec: &'a Spec,
     reference: &'a Reference<RequestBody>,
@@ -478,6 +514,7 @@ fn resolve_ref_request_body<'a>(
     }
 }
 
+/// Resolve a reference to a response.
 pub fn resolve_ref_response<'a>(
     spec: &'a Spec,
     reference: &'a Reference<Response>,
@@ -501,6 +538,7 @@ pub fn resolve_ref_response<'a>(
     }
 }
 
+/// Resolve a reference to a header.
 fn resolve_ref_header<'a>(spec: &'a Spec, reference: &'a Reference<Header>) -> Result<&'a Header> {
     match &reference.object {
         Some(o) => Ok(o),
@@ -521,54 +559,11 @@ fn resolve_ref_header<'a>(spec: &'a Spec, reference: &'a Reference<Header>) -> R
     }
 }
 
-/*
-fn resolve_ref<'a, T>(spec: &'a Spec, reference: &'a Reference<T>) -> Result<&'a T, String> {
-    match &reference.object {
-        Some(o) => Ok(o),
-        None => match &reference.r#ref {
-            Some(r) => {
-                let mut v:Vec<&str> = r.split("/").collect();
-                if let Some("#") = v.pop(){
-                    resolve_root_ref(spec, v)
-                } else {
-                    Err(format!("reference {r} not handled"))
-                }
-            },
-            None => Err("No reference, no object".into()),
-        },
-    }
-}
-
-
-fn resolve_root_ref<'a, T>(spec: &'a Spec, mut path: Vec<&'a str>) -> Result<&'a T, String> {
-    match path.pop() {
-        Some("components") =>resolve_components_ref(spec, path),
-        Some(r) => Err(format!("reference {r} not handled")),
-        None => Err("reference not handled".into()),
-    }
-
-}
-
-fn resolve_components_ref<'a, T>(spec: &'a Spec, mut path: Vec<&'a str>) -> Result<&'a T, String> {
-    match path.pop() {
-        Some("parameters") =>resolve_parameter_ref(spec, path),
-        Some(r) => Err(format!("reference {r} not handled")),
-        None => Err("reference not handled".into()),
-    }
-
-}
-
-fn resolve_parameter_ref<'a, T>(spec: &'a Spec, mut path: Vec<&'a str>) -> Result<&'a T, String> {
-    match path.pop() {
-        Some(n) => spec.components.parameters.get(n).map(|p| p.object.as_ref()).flatten().ok_or_else(|| format!("parameter {n} not found")),
-        None => Err("reference not handled".into()),
-    }
-
-}
-*/
-
+/// JSON Schema resolver for the given spec.
 struct SpecResolver {
+    /// The raw spec value.
     spec: Arc<Value>,
+    /// Are we validating a response (true) or a request (false).
     is_response: bool,
 }
 
@@ -579,6 +574,7 @@ impl SchemaResolver for SpecResolver {
         url: &Url,
         _original_reference: &str,
     ) -> Result<Arc<Value>, SchemaResolverError> {
+        // Resolve local types in the given Spec.
         if let Some(path) = url.to_string().strip_prefix("json-schema://spec") {
             let v = self
                 .spec
@@ -600,8 +596,9 @@ impl SchemaResolver for SpecResolver {
     }
 }
 
+/// The JSON Schema implementation does not handle readOnly/writeOnly, so we do it ourselves.
+/// Remove from the required list the properties marked with the given flag.
 fn post_process_schema(value: &mut Value, flag_to_ignore: &str) {
-    //eprintln!("{flag_to_ignore}: {:?}", value.get("properties"));
     if let Some(props) = value.get("properties").and_then(Value::as_object) {
         let properties_to_ignore: Vec<String> = props
             .iter()
@@ -616,6 +613,7 @@ fn post_process_schema(value: &mut Value, flag_to_ignore: &str) {
     }
 }
 
+/// Validate a given request or response body against the JSON Schema.
 fn validate_body(
     v_spec: Arc<Value>,
     schema: &Schema,
@@ -623,6 +621,7 @@ fn validate_body(
     is_response: bool,
 ) -> Result<Value> {
     let v = serde_json::to_value(schema).map_err(|e| anyhow!("cannot get schema as value: {e}"))?;
+    // Replace local paths by a marker, this will be processed by the resolver.
     let v = serde_json::from_str(&v.to_string().replace("#/", "json-schema://spec/"))
         .map_err(|e| anyhow!("cannot parse transformed schema {e}"))?;
     //eprintln!("{v}");
@@ -652,6 +651,7 @@ fn validate_body(
     r.map(|_| input)
 }
 
+/// Validate that a given simple value conforms to the given schema.
 fn validate_value(schema: &Schema, value: &str) -> Result<()> {
     if !schema.r#enum.is_empty() && !schema.r#enum.iter().any(|e| e == value) {
         return Err(anyhow!("{value} not part of enum values"));
@@ -687,24 +687,14 @@ fn validate_value(schema: &Schema, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a request URI matches a given server in the spec, using the root replacements provided.
 fn validate_uri<'a, 'b>(
     spec: &'a Spec,
     url: &'b str,
     roots: &[RootReplacement],
 ) -> Result<(&'a Server, &'b str)> {
-    /*
-    let relative = match root {
-        Some(root) => url.strip_prefix(root).unwrap_or(url),
-        None => url,
-    };
-    for server in spec.servers.iter() {
-        if let Some(path) = relative.strip_prefix(&server.url) {
-            return Ok((server, path));
-        }
-    }*/
     for replacement in roots {
         if let Some(suffix) = url.strip_prefix(&replacement.from) {
-            //let new_url = format!("{}{suffix}",replacement.to);
             for server in spec.servers.iter() {
                 if let Some(server_suffix) = server.url.strip_prefix(&replacement.to) {
                     if let Some(path) = suffix.strip_prefix(server_suffix) {
@@ -722,15 +712,18 @@ fn validate_uri<'a, 'b>(
     Err(anyhow!("No server found for {url}"))
 }
 
+/// find the path item a given request matches.
 fn find_path<'a, 'b>(
     spec: &'a Spec,
     path: &'b str,
 ) -> Result<(&'a PathItem, Option<HashMap<&'a str, &'b str>>)> {
+    // Exact match.
     for (pattern, item) in spec.paths.iter() {
         if pattern == path {
             return Ok((item, None));
         }
     }
+    // Match with parameter. Take the match with the least substitutions.
     let mut matching = vec![];
     let mut sz = usize::MAX;
     for (pattern, item) in spec.paths.iter() {
@@ -752,6 +745,8 @@ fn find_path<'a, 'b>(
     Err(anyhow!("no path found for {path}"))
 }
 
+/// Match a path with the given pattern, and returns the map of parameter names to values
+/// if there's a match.
 fn match_path_pattern<'a, 'b>(
     pattern: &'a str,
     path: &'b str,
@@ -786,6 +781,7 @@ fn match_path_pattern<'a, 'b>(
     Some(m)
 }
 
+/// Extract parameters from a path.
 fn extract_parameters(path: &str) -> Vec<(usize, &str)> {
     let mut start = 0;
     let mut ret = vec![];

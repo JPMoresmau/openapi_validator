@@ -42,20 +42,6 @@ async fn main() {
                     process::exit(5);
                 }
             }
-
-            /*let request = r#""#;
-            match ValidationSpec::new(&spec, None){
-                Ok(v_spec) => {
-                    match validate_raw_request(&v_spec, request){
-                        Ok(_) => println!("request OK"),
-                        Err(err) => println!("request error: {err}"),
-                    }
-                }
-                Err(err) => {
-                    println!("Cannot build validation spec: {}", err);
-                    process::exit(3);
-                }
-            }*/
         }
         Err(err) => {
             println!("Cannot parse spec: {err}");
