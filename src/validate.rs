@@ -28,7 +28,7 @@ pub struct ValidationSpec {
 
 /// Root replacement, to validate requests going to a different
 /// server root than what specified in the spec.
-/// 
+///
 /// This allows for example to have a spec referencing your production
 /// server but validate calls going to a test server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,17 +42,8 @@ pub struct RootReplacement {
 /// Read the root replacements from a YAML file, containing a list of objects
 /// with `from` and `to` fields.
 pub fn read_replacements_from_file<P: AsRef<Path>>(path: P) -> io::Result<Vec<RootReplacement>> {
-    from_file(path.as_ref(), |file| {
-        serde_yaml::from_reader(file).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
-    })
-}
-
-fn from_file<P>(path: &Path, parse: P) -> io::Result<Vec<RootReplacement>>
-where
-    P: FnOnce(BufReader<File>) -> io::Result<Vec<RootReplacement>>,
-{
     let file = BufReader::new(File::open(path)?);
-    parse(file)
+    serde_yaml::from_reader(file).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 
 impl ValidationSpec {
@@ -265,7 +256,7 @@ pub trait ResponseDefinition {
     /// HTTP response status.
     fn status(&self) -> Option<u16>;
 
-     /// Get the response header value for the given header name.
+    /// Get the response header value for the given header name.
     fn header(&self, key: &str) -> Result<Option<&str>>;
 
     /// Get the response body.
@@ -624,10 +615,8 @@ fn validate_body(
     // Replace local paths by a marker, this will be processed by the resolver.
     let v = serde_json::from_str(&v.to_string().replace("#/", "json-schema://spec/"))
         .map_err(|e| anyhow!("cannot parse transformed schema {e}"))?;
-    //eprintln!("{v}");
 
     let mut opts = JSONSchema::options();
-    //opts.with_document("http://spec/".into(), v_spec);
 
     opts.with_resolver(SpecResolver {
         spec: v_spec,
@@ -637,8 +626,6 @@ fn validate_body(
     let compiled = opts
         .compile(&v)
         .map_err(|e| anyhow!("cannot compile schema: {e}"))?;
-
-    //eprintln!("compiled: {compiled:?}");
 
     let input = serde_json::from_str(value).map_err(|e| anyhow!("cannot parse input {e}"))?;
     let r = match compiled.validate(&input) {
