@@ -34,3 +34,35 @@ let r = validate_raw_response(
  assert!(r.is_ok(), "{}", r.unwrap_err());
  assert_eq!(Some("successful operation".to_string()), r.unwrap().0.description);
 ```
+
+## Running full test cases
+
+Another way to use this library is to run tests defined in YAML. You provide requests and responses in files, and the framework
+will verify the request matches the spec, actually connect to the server and get the response, and verify the response matches both
+the expected response and the spec. This can be use to test both an API server behavior and compliance with the spec.
+
+The YAML files you use to define a test are as follows:
+
+```yaml
+- id: inventory_by_status
+  request: |+
+    GET https://petstore3.swagger.io/api/v3/store/inventory HTTP/1.1
+    Host: petstore3.swagger.io
+
+  api_operation: getInventory
+  response: |+
+    HTTP/1.1 200 OK
+    content-type: application/json
+    content-length: 2
+    
+    {}
+```
+
+It's possible to pass a substitution function to replace some tokens of the request and responses by values calculated at run time.
+
+See [main.rs](src/main.rs) for a simple example.
+
+## Root substitutions
+
+It's possible to test a server that has a different root address than the one defined in the API (so the API can point to your production server
+and you test locally for example) by providing a substitution map of the API defined root to the actual server root.
